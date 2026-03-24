@@ -5,9 +5,9 @@ import logging
 from typing import Dict
 
 from core.config import settings
+from core.market_data import build_provider
 from core.db import SessionLocal
 from core.orchestrator import TradingOrchestrator
-from data.marketwatch import MarketWatchProvider
 from data.provider import MarketDataProvider
 
 logger = logging.getLogger("coordinator")
@@ -15,7 +15,7 @@ logger = logging.getLogger("coordinator")
 
 class Coordinator:
     def __init__(self, provider: MarketDataProvider | None = None):
-        self.provider = provider or MarketWatchProvider()
+        self.provider = provider or build_provider()
         self._tasks: Dict[int, asyncio.Task] = {}
         self._strategies: Dict[int, str] = {}
 

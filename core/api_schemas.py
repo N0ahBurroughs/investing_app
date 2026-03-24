@@ -9,6 +9,28 @@ class UserCreateRequest(BaseModel):
     initial_capital: float = Field(default=100000.0, ge=0)
 
 
+class UserEnsureRequest(BaseModel):
+    email: EmailStr
+    name: str
+    initial_capital: float = Field(default=100000.0, ge=0)
+
+
+class RegisterRequest(BaseModel):
+    username: str
+    password: str
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class SetupRequest(BaseModel):
+    user_id: int
+    initial_capital: float = Field(default=100000.0, ge=0)
+    strategy: str
+
+
 class StrategyRequest(BaseModel):
     user_id: int
     content: str
@@ -31,4 +53,4 @@ class BacktestRequest(BaseModel):
 class TradeRunRequest(BaseModel):
     user_id: int
     content: str
-    provider: str = "marketwatch"
+    provider: str = "finnhub"

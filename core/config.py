@@ -8,6 +8,8 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/investing"
     gemini_api_key: str | None = None
+    finnhub_api_key: str | None = None
+    market_data_provider: str = "finnhub"
     market_poll_seconds: int = 30
     log_level: str = "INFO"
 

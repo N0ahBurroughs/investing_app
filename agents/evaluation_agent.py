@@ -6,7 +6,10 @@ from core.models import EvaluationResult, MarketSnapshot, Portfolio, RuleSet, Tr
 
 class EvaluationAgent:
     def __init__(self) -> None:
-        self.client = GeminiClient()
+        try:
+            self.client = GeminiClient()
+        except Exception:
+            self.client = None
 
     async def evaluate(
         self,
@@ -27,10 +30,25 @@ class EvaluationAgent:
             f"MarketSnapshot: {snapshot.model_dump()}\n"
             f"PnLImpact: {pnl_impact}"
         )
-        data = await self.client.generate_json(prompt)
-        return EvaluationResult(
-            score=float(data.get("score", 0.5)),
-            rule_compliance=float(data.get("rule_compliance", 0.5)),
-            pnl_impact=pnl_impact,
-            notes=list(data.get("notes", [])),
-        )
+        if not self.client:
+            return EvaluationResult(
+                score=0.5,
+                rule_compliance=0.5,
+                pnl_impact=pnl_impact,
+                notes=["LLM unavailable; default evaluation applied."],
+            )
+        try:
+            data = await self.client.generate_json(prompt)
+            return EvaluationResult(
+                score=float(data.get("score", 0.5)),
+                rule_compliance=float(data.get("rule_compliance", 0.5)),
+                pnl_impact=pnl_impact,
+                notes=list(data.get("notes", [])),
+            )
+        except Exception:
+            return EvaluationResult(
+                score=0.5,
+                rule_compliance=0.5,
+                pnl_impact=pnl_impact,
+                notes=["LLM unavailable; default evaluation applied."],
+            )

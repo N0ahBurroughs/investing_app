@@ -6,7 +6,10 @@ from core.models import MarketSnapshot, Portfolio, RiskCheckResult, RuleSet, Tra
 
 class RiskAgent:
     def __init__(self) -> None:
-        self.client = GeminiClient()
+        try:
+            self.client = GeminiClient()
+        except Exception:
+            self.client = None
 
     async def validate(
         self,
@@ -23,10 +26,17 @@ class RiskAgent:
             f"MarketSnapshot: {snapshot.model_dump()}\n"
             f"Decision: {decision.model_dump()}"
         )
-        data = await self.client.generate_json(prompt)
-        approved = bool(data.get("approved", True))
-        reasons = list(data.get("reasons", []))
-        adjusted = data.get("adjusted_quantity")
+        approved = True
+        reasons: list[str] = []
+        adjusted = None
+        if self.client:
+            try:
+                data = await self.client.generate_json(prompt)
+                approved = bool(data.get("approved", True))
+                reasons = list(data.get("reasons", []))
+                adjusted = data.get("adjusted_quantity")
+            except Exception:
+                reasons.append("LLM unavailable; using fallback risk checks")
 
         indicator = snapshot.indicators.get(decision.symbol)
         if not indicator:

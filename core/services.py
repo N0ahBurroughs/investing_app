@@ -12,7 +12,9 @@ from core.user import Portfolio, Position, Trade, User
 async def get_portfolio_model(session: AsyncSession, user_id: int) -> PortfolioModel:
     portfolio = await session.scalar(select(Portfolio).where(Portfolio.user_id == user_id))
     if not portfolio:
-        raise ValueError("Portfolio not found")
+        portfolio = Portfolio(user_id=user_id, cash=0.0)
+        session.add(portfolio)
+        await session.flush()
     positions = await session.execute(select(Position).where(Position.portfolio_id == portfolio.id))
     position_map: dict[str, PositionModel] = {}
     for position in positions.scalars():

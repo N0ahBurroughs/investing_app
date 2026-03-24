@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Any, Dict
 
 import httpx
@@ -9,11 +10,15 @@ from core.config import settings
 
 
 class GeminiClient:
-    def __init__(self, api_key: str | None = None):
-        self.api_key = api_key or settings.gemini_api_key
+    def __init__(self, api_key: str | None = None, base_url: str | None = None):
+        self.api_key = api_key or settings.gemini_api_key or os.getenv("GOOGLE_FLASH_API_KEY")
         if not self.api_key:
-            raise ValueError("GEMINI_API_KEY not set")
-        self.base_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent"
+            raise ValueError("GEMINI_API_KEY or GOOGLE_FLASH_API_KEY not set")
+        self.base_url = (
+            base_url
+            or os.getenv("GOOGLE_FLASH_BASE_URL")
+            or "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent"
+        )
 
     async def generate(self, prompt: str) -> str:
         payload = {
@@ -31,7 +36,8 @@ class GeminiClient:
                 params={"key": self.api_key},
                 json=payload,
             )
-            response.raise_for_status()
+            if response.status_code >= 400:
+                raise ValueError(f"Gemini request failed: {response.status_code} {response.text}")
             data = response.json()
         return self._extract_text(data)
 

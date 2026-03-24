@@ -18,6 +18,7 @@ core/learning_state.py
 core/llm.py
 core/logger.py
 core/logging.py
+core/market_data.py
 core/models.py
 core/orchestrator.py
 core/rules.py
@@ -26,6 +27,9 @@ core/services.py
 core/trading.py
 core/user.py
 data/__init__.py
+data/cache_provider.py
+data/errors.py
+data/finnhub.py
 data/marketwatch.py
 data/mock_provider.py
 data/provider.py
@@ -39,4 +43,5 @@ investing_app.egg-info/requires.txt
 investing_app.egg-info/top_level.txt
 tests/test_agents.py
 tests/test_backtester.py
+tests/test_finnhub_provider.py
 tests/test_rules.py

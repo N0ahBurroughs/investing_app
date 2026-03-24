@@ -10,8 +10,14 @@ import {
 } from "recharts";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
+const DEFAULT_SYMBOLS = ["AAPL", "MSFT", "NVDA", "AMZN", "TSLA"];
 
 const sampleStrategy = `Name: Momentum Daily\nUniverse: AAPL, MSFT, NVDA\nMax_Position_Pct: 0.1\nMax_Risk_Score: 0.6\nEntry: Buy when price above 20-day SMA and RSI < 70\nExit: Sell when price below 20-day SMA or RSI > 75`;
+const strategyPresets = {
+  safe: `Name: Defensive Core\nUniverse: AAPL, MSFT, JNJ, PG\nMax_Position_Pct: 0.08\nMax_Risk_Score: 0.4\nEntry: Buy when price above 20-day SMA and RSI < 65\nExit: Sell when price below 20-day SMA or RSI > 70`,
+  balanced: `Name: Balanced Trend\nUniverse: AAPL, MSFT, NVDA, AMZN\nMax_Position_Pct: 0.12\nMax_Risk_Score: 0.6\nEntry: Buy when price above 20-day SMA and RSI between 45 and 70\nExit: Sell when price below 20-day SMA or RSI > 75`,
+  risky: `Name: Aggressive Momentum\nUniverse: NVDA, TSLA, AMD, COIN\nMax_Position_Pct: 0.2\nMax_Risk_Score: 0.8\nEntry: Buy when price above 20-day SMA and RSI < 75\nExit: Sell when price below 20-day SMA or RSI > 80`
+};
 
 function StatCard({ label, value, accent }) {
   return (
@@ -27,10 +33,21 @@ function Pill({ text }) {
 }
 
 export default function App() {
-  const [userId, setUserId] = useState(1);
+  const [userId, setUserId] = useState(null);
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [authMode, setAuthMode] = useState("login");
+  const [authError, setAuthError] = useState("");
+  const [setupComplete, setSetupComplete] = useState(false);
+  const [setupError, setSetupError] = useState("");
+  const [setupConflicts, setSetupConflicts] = useState([]);
+  const [initialCapital, setInitialCapital] = useState(100000);
+  const [provider, setProvider] = useState("finnhub");
+  const [historyRange, setHistoryRange] = useState("1M");
   const [portfolio, setPortfolio] = useState(null);
   const [trades, setTrades] = useState([]);
   const [market, setMarket] = useState(null);
+  const [marketHistory, setMarketHistory] = useState({});
   const [strategyText, setStrategyText] = useState(sampleStrategy);
   const [conflicts, setConflicts] = useState([]);
   const [strategies, setStrategies] = useState([]);
@@ -54,11 +71,41 @@ export default function App() {
   };
 
   const fetchMarket = async () => {
-    const res = await fetch(`${API_BASE}/market?symbols=AAPL,MSFT,NVDA,AMZN,TSLA`);
+    const symbolList = DEFAULT_SYMBOLS.join(",");
+    const res = await fetch(`${API_BASE}/market?symbols=${symbolList}&provider=${provider}`);
     if (res.ok) {
       const data = await res.json();
       setMarket(data);
     }
+  };
+
+  const getRangeDays = () => {
+    if (historyRange === "1D") return 1;
+    if (historyRange === "5D") return 5;
+    if (historyRange === "1M") return 30;
+    if (historyRange === "1Y") return 365;
+    if (historyRange === "YTD") {
+      const now = new Date();
+      const start = new Date(now.getFullYear(), 0, 1);
+      const diff = Math.max(1, Math.ceil((now - start) / (1000 * 60 * 60 * 24)));
+      return diff;
+    }
+    return 30;
+  };
+
+  const fetchHistory = async () => {
+    const days = getRangeDays();
+    const entries = await Promise.all(
+      DEFAULT_SYMBOLS.map(async (symbol) => {
+        const res = await fetch(`${API_BASE}/history?symbol=${symbol}&days=${days}&provider=${provider}`);
+        if (res.ok) {
+          const data = await res.json();
+          return [symbol, data.history || []];
+        }
+        return [symbol, marketHistory[symbol] || []];
+      })
+    );
+    setMarketHistory(Object.fromEntries(entries));
   };
 
   const fetchStrategies = async () => {
@@ -70,9 +117,11 @@ export default function App() {
   };
 
   useEffect(() => {
+    if (!userId) return;
     fetchPortfolio();
     fetchTrades();
     fetchMarket();
+    fetchHistory();
     fetchStrategies();
     const timer = setInterval(() => {
       fetchPortfolio();
@@ -80,7 +129,7 @@ export default function App() {
       fetchMarket();
     }, 15000);
     return () => clearInterval(timer);
-  }, [userId]);
+  }, [userId, provider, historyRange]);
 
   const handleStrategySave = async () => {
     const res = await fetch(`${API_BASE}/strategy`, {
@@ -107,7 +156,7 @@ export default function App() {
     const res = await fetch(`${API_BASE}/trade/run`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ user_id: userId, content: strategyText, provider: "marketwatch" })
+      body: JSON.stringify({ user_id: userId, content: strategyText, provider })
     });
     if (res.ok) {
       const data = await res.json();
@@ -115,6 +164,76 @@ export default function App() {
       fetchTrades();
       fetchPortfolio();
     }
+  };
+
+  const handleAuth = async () => {
+    setAuthError("");
+    if (!username || !password) {
+      setAuthError("Username and password are required.");
+      return;
+    }
+    const endpoint = authMode === "register" ? "/auth/register" : "/auth/login";
+    const res = await fetch(`${API_BASE}${endpoint}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        username: username.trim().toLowerCase(),
+        password
+      })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setAuthError(data.detail || "Authentication failed.");
+      return;
+    }
+    setUserId(data.user_id);
+    setSetupComplete(Boolean(data.setup_complete));
+  };
+
+  const handleSetup = async () => {
+    setSetupError("");
+    if (!strategyText.trim()) {
+      setSetupError("Strategy is required.");
+      return;
+    }
+    const res = await fetch(`${API_BASE}/user/setup`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        user_id: userId,
+        initial_capital: Number(initialCapital),
+        strategy: strategyText
+      })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setSetupError(data.detail || "Setup failed.");
+      return;
+    }
+    setSetupConflicts(data.conflicts || []);
+    setSetupComplete(true);
+    fetchPortfolio();
+    fetchTrades();
+    fetchMarket();
+    fetchHistory();
+    fetchStrategies();
+  };
+
+  const handleLogout = () => {
+    setUserId(null);
+    setUsername("");
+    setPassword("");
+    setPortfolio(null);
+    setTrades([]);
+    setMarket(null);
+    setMarketHistory({});
+    setStrategies([]);
+    setConflicts([]);
+    setRefinements([]);
+    setSetupComplete(false);
+    setAuthError("");
+    setSetupError("");
+    setSetupConflicts([]);
   };
 
   const handleStop = async () => {
@@ -144,6 +263,100 @@ export default function App() {
     });
   }, [portfolio, market, holdings]);
 
+  if (!userId) {
+    return (
+      <div className="min-h-screen px-6 py-12 flex items-center justify-center">
+        <div className="card p-8 w-full max-w-lg">
+          <p className="text-sm uppercase tracking-[0.4em] text-slate-500 mb-3">AI Investing Platform</p>
+          <h1 className="text-3xl font-display mb-4">{authMode === "register" ? "Create account" : "Sign in"}</h1>
+          <div className="space-y-4">
+            <input
+              className="w-full px-3 py-2 rounded-lg border border-slate-300"
+              placeholder="Username"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+            />
+            <input
+              className="w-full px-3 py-2 rounded-lg border border-slate-300"
+              placeholder="Password"
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+            {authError && <p className="text-sm text-ember">{authError}</p>}
+            <button onClick={handleAuth} className="w-full px-4 py-2 rounded-lg bg-ink text-white">
+              {authMode === "register" ? "Create Account" : "Sign In"}
+            </button>
+            <button
+              onClick={() => setAuthMode(authMode === "register" ? "login" : "register")}
+              className="w-full px-4 py-2 rounded-lg border border-slate-300"
+            >
+              {authMode === "register" ? "I already have an account" : "Create a new account"}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!setupComplete) {
+    return (
+      <div className="min-h-screen px-6 py-12 flex items-center justify-center">
+        <div className="card p-8 w-full max-w-2xl">
+          <p className="text-sm uppercase tracking-[0.4em] text-slate-500 mb-3">Initial Setup</p>
+          <h1 className="text-3xl font-display mb-4">Fund your account and set a strategy</h1>
+          <div className="space-y-4">
+            <div className="flex gap-2 flex-wrap">
+              <button
+                onClick={() => setStrategyText(strategyPresets.safe)}
+                className="px-3 py-1 rounded-full text-xs border border-slate-300 text-slate-700"
+              >
+                Safe
+              </button>
+              <button
+                onClick={() => setStrategyText(strategyPresets.balanced)}
+                className="px-3 py-1 rounded-full text-xs border border-slate-300 text-slate-700"
+              >
+                Balanced
+              </button>
+              <button
+                onClick={() => setStrategyText(strategyPresets.risky)}
+                className="px-3 py-1 rounded-full text-xs border border-slate-300 text-slate-700"
+              >
+                Risky
+              </button>
+              <button
+                onClick={() => setStrategyText(sampleStrategy)}
+                className="px-3 py-1 rounded-full text-xs border border-slate-300 text-slate-700"
+              >
+                Custom
+              </button>
+            </div>
+            <input
+              className="w-full px-3 py-2 rounded-lg border border-slate-300"
+              placeholder="Starting capital"
+              type="number"
+              value={initialCapital}
+              onChange={(e) => setInitialCapital(Number(e.target.value))}
+            />
+            <textarea
+              className="w-full h-48 p-3 rounded-lg border border-slate-300 text-sm"
+              value={strategyText}
+              onChange={(e) => setStrategyText(e.target.value)}
+            />
+            {setupError && <p className="text-sm text-ember">{setupError}</p>}
+            {setupConflicts.length > 0 && (
+              <p className="text-sm text-ember">Strategy conflicts: {setupConflicts.join("; ")}</p>
+            )}
+            <button onClick={handleSetup} className="w-full px-4 py-2 rounded-lg bg-ink text-white">
+              Save & Continue
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen px-6 py-8">
       <header className="flex flex-col md:flex-row justify-between gap-4 mb-8">
@@ -152,15 +365,20 @@ export default function App() {
           <h1 className="text-3xl md:text-4xl font-display">Real-Time Strategy Command Center</h1>
         </div>
         <div className="flex gap-3 items-center">
-          <input
+          <span className="text-sm text-slate-600">{username || "Trader"}</span>
+          <select
             className="px-3 py-2 rounded-lg border border-slate-300"
-            type="number"
-            value={userId}
-            onChange={(e) => setUserId(Number(e.target.value))}
-          />
+            value={provider}
+            onChange={(e) => setProvider(e.target.value)}
+          >
+            <option value="finnhub">Finnhub</option>
+            <option value="mock">Mock</option>
+            <option value="marketwatch">MarketWatch</option>
+          </select>
           <button onClick={handleStart} className="px-4 py-2 rounded-lg bg-emerald-600 text-white">Start</button>
           <button onClick={handleRunOnce} className="px-4 py-2 rounded-lg bg-accent text-white">Run Once</button>
           <button onClick={handleStop} className="px-4 py-2 rounded-lg bg-slate-800 text-white">Stop</button>
+          <button onClick={handleLogout} className="px-4 py-2 rounded-lg border border-slate-300">Logout</button>
         </div>
       </header>
 
@@ -227,11 +445,33 @@ export default function App() {
         </div>
         <div className="card p-6">
           <h2 className="font-display text-xl mb-4">Market View</h2>
-          <div className="space-y-2">
+          <div className="flex gap-2 mb-4 flex-wrap">
+            {["1D", "5D", "1M", "YTD", "1Y"].map((range) => (
+              <button
+                key={range}
+                onClick={() => setHistoryRange(range)}
+                className={`px-3 py-1 rounded-full text-xs border ${historyRange === range ? "bg-ink text-white border-ink" : "border-slate-300 text-slate-700"}`}
+              >
+                {range}
+              </button>
+            ))}
+          </div>
+          <div className="space-y-4">
             {market?.indicators && Object.entries(market.indicators).map(([symbol, data]) => (
-              <div key={symbol} className="flex items-center justify-between border-b border-slate-200 pb-2">
-                <p className="font-display">{symbol}</p>
-                <p>${Number(data.price).toFixed(2)}</p>
+              <div key={symbol} className="border-b border-slate-200 pb-3">
+                <div className="flex items-center justify-between mb-2">
+                  <p className="font-display">{symbol}</p>
+                  <p>${Number(data.price).toFixed(2)}</p>
+                </div>
+                <div className="h-20">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart
+                      data={(marketHistory[symbol] || []).map((h) => ({ name: h.date, value: h.close }))}
+                    >
+                      <Line type="monotone" dataKey="value" stroke="#0ea5e9" strokeWidth={2} dot={false} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
               </div>
             ))}
           </div>

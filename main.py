@@ -6,18 +6,30 @@ from typing import List
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.api_schemas import BacktestRequest, StartRequest, StopRequest, StrategyRequest, TradeRunRequest, UserCreateRequest
+from core.api_schemas import (
+    BacktestRequest,
+    LoginRequest,
+    RegisterRequest,
+    SetupRequest,
+    StartRequest,
+    StopRequest,
+    StrategyRequest,
+    TradeRunRequest,
+    UserCreateRequest,
+    UserEnsureRequest,
+)
 from core.coordinator import Coordinator
 from core.db import SessionLocal, init_db
 from core.logger import configure_logging
+from core.market_data import build_provider
 from core.models import Portfolio as PortfolioModel
 from core.orchestrator import TradingOrchestrator
-from core.security import validate_strategy_input
+from core.security import hash_password, validate_strategy_input, verify_password
 from core.services import get_portfolio_model
 from core.user import Portfolio, Strategy, Trade, User
-from data.marketwatch import MarketWatchProvider
 from data.mock_provider import MockMarketDataProvider
 from evaluation.backtester import Backtester
 
@@ -50,13 +62,82 @@ async def create_user(payload: UserCreateRequest, session: AsyncSession = Depend
     existing = await session.scalar(select(User).where(User.email == payload.email))
     if existing:
         raise HTTPException(status_code=400, detail="User already exists")
-    user = User(email=payload.email, name=payload.name)
+    user = User(email=payload.email, name=payload.name, username=payload.email, password_hash=hash_password("changeme"))
     session.add(user)
     await session.flush()
     portfolio = Portfolio(user_id=user.id, cash=payload.initial_capital)
     session.add(portfolio)
     await session.commit()
     return {"user_id": user.id, "portfolio_id": portfolio.id}
+
+
+@app.post("/user/ensure")
+async def ensure_user(payload: UserEnsureRequest, session: AsyncSession = Depends(get_session)):
+    user = await session.scalar(select(User).where(User.email == payload.email))
+    if not user:
+        user = User(email=payload.email, name=payload.name, username=payload.email, password_hash=hash_password("changeme"))
+        session.add(user)
+        await session.flush()
+    portfolio = await session.scalar(select(Portfolio).where(Portfolio.user_id == user.id))
+    if not portfolio:
+        portfolio = Portfolio(user_id=user.id, cash=payload.initial_capital)
+        session.add(portfolio)
+    await session.commit()
+    return {"user_id": user.id, "portfolio_id": portfolio.id}
+
+
+@app.post("/auth/register")
+async def register(payload: RegisterRequest, session: AsyncSession = Depends(get_session)):
+    username = payload.username.strip().lower()
+    if not username or not payload.password:
+        raise HTTPException(status_code=400, detail="Username and password are required")
+    existing = await session.scalar(select(User).where(User.username == username))
+    if existing:
+        raise HTTPException(status_code=400, detail="Username already exists")
+    user = User(username=username, password_hash=hash_password(payload.password))
+    session.add(user)
+    await session.commit()
+    return {"user_id": user.id, "setup_complete": user.setup_complete}
+
+
+@app.post("/auth/login")
+async def login(payload: LoginRequest, session: AsyncSession = Depends(get_session)):
+    username = payload.username.strip().lower()
+    user = await session.scalar(select(User).where(User.username == username))
+    if not user or not verify_password(payload.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    return {"user_id": user.id, "setup_complete": user.setup_complete}
+
+
+@app.post("/user/setup")
+async def setup_user(payload: SetupRequest, session: AsyncSession = Depends(get_session)):
+    user = await session.scalar(select(User).where(User.id == payload.user_id))
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    cleaned = validate_strategy_input(payload.strategy)
+    portfolio = await session.scalar(select(Portfolio).where(Portfolio.user_id == user.id))
+    if not portfolio:
+        portfolio = Portfolio(user_id=user.id, cash=payload.initial_capital)
+        session.add(portfolio)
+    else:
+        portfolio.cash = payload.initial_capital
+    await session.execute(
+        update(Strategy).where(Strategy.user_id == user.id).values(active=False)
+    )
+    orchestrator = TradingOrchestrator(provider=MockMarketDataProvider())
+    rules, _ = await orchestrator.strategy_agent.parse(cleaned)
+    conflicts = await orchestrator.strategy_agent.detect_conflicts(rules)
+    strategy = Strategy(
+        user_id=user.id,
+        name=rules.name,
+        raw_text=cleaned,
+        normalized=rules.model_dump(),
+        active=True,
+    )
+    session.add(strategy)
+    user.setup_complete = True
+    await session.commit()
+    return {"user_id": user.id, "setup_complete": user.setup_complete, "conflicts": conflicts}
 
 
 @app.post("/strategy")
@@ -76,7 +157,7 @@ async def set_strategy(payload: StrategyRequest, session: AsyncSession = Depends
 
 @app.post("/trade/run")
 async def run_trade(payload: TradeRunRequest, session: AsyncSession = Depends(get_session)):
-    provider = MarketWatchProvider() if payload.provider == "marketwatch" else MockMarketDataProvider()
+    provider = build_provider(payload.provider)
     orchestrator = TradingOrchestrator(provider=provider)
     record = await orchestrator.run_cycle(session, payload.user_id, payload.content)
     refinements = await orchestrator.learning_agent.suggest_refinements(record)
@@ -110,6 +191,7 @@ async def stop_loop(payload: StopRequest):
 @app.get("/portfolio")
 async def get_portfolio(user_id: int, session: AsyncSession = Depends(get_session)):
     portfolio = await get_portfolio_model(session, user_id)
+    await session.commit()
     return portfolio.model_dump()
 
 
@@ -150,16 +232,23 @@ async def list_strategies(user_id: int, session: AsyncSession = Depends(get_sess
 
 
 @app.get("/market")
-async def get_market(symbols: str = "AAPL,MSFT,NVDA"):
-    provider = MarketWatchProvider()
+async def get_market(symbols: str = "AAPL,MSFT,NVDA", provider: str | None = None):
+    provider = build_provider(provider)
     symbol_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
     snapshot = await provider.get_snapshot(symbol_list)
     return snapshot.model_dump()
 
 
+@app.get("/history")
+async def get_history(symbol: str, days: int = 30, provider: str | None = None):
+    provider = build_provider(provider)
+    history = await provider.get_history(symbol, days=days)
+    return {"symbol": symbol.upper(), "days": days, "history": history}
+
+
 @app.post("/backtest")
 async def backtest(payload: BacktestRequest, session: AsyncSession = Depends(get_session)):
-    provider = MarketWatchProvider()
+    provider = build_provider()
     history = await provider.get_history(payload.symbol, days=payload.days)
     orchestrator = TradingOrchestrator(provider=provider)
     strategy = await session.scalar(
